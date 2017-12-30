@@ -1,0 +1,300 @@
+---
+title: "Antfin"
+author: "Cynthia Li, CFA"
+date: "12/17/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	cache= TRUE
+)
+```
+## 笔试题：
+>1. 描述一个你曾经完成或参与的数据分析的项目
+> A）数据集的大小，包含多少变量/字段？你曾经用过的最大数据是多少？数据的采样是如何进行
+的？如果是你进行采样，用了什么语言/算法/软件？
+
+> 回答：几个G的数据量，包含30多个变量，用过的最大数据是几十G，数据采样的方法是stratified sampling，我当时用的是R里分层抽样的方法
+
+> B）在数据处理中，你需要考虑哪些因素，是否需要做数据清洗？是否数据采样有取样偏差
+（sampling Bias）？
+
+> 回答：在数据处理中会遇到很多不同的问题，比如前后数据的inconsistency，单位错误，缺失，无效，错误等，以及不同数据源整合时遇到的重复，不匹配等问题，所以需要数据清洗，数据采样会造成偏差，比如不平衡的categorical data，简单总结如下：
+
+- 单数据源问题 
+    + 数据 schema 设计问题，比如缺失 integrity constraint
+    + instance问题，比如输入错误，拼写错误，redundancy/duplicates，contradictory值等 
+- 多数据源问题 
+    + 数据 schema 设计问题，比如naming conflict，structural conflict
+    + instance问题，比如inconsistent aggregating, inconsistent timing等
+
+> C) 你采用了什么样的分析/建模方法？是否这些方法符合业界标准？是否对你的数据最优？
+
+> 回答：我一般会先观察数据类型，取值范围，密度分布等，这样对要解决的问题有个快速理解，然后从最简单的线性模型开始，比如逻辑回归，当feature很多时，我会再用上ridge或者lasso这种regulization technique，然后会尝试非线性模型，比如random forest和GBM，random forest的优点是可以做feature importance analysis和feature selection，GBM模型中我用的最多的是xgboost，因为它不仅有树模型的优点，同时在不compromise accuracy的前提下，有较快的运算速度。这些方法同样也是纽约业界的标准，从最简单的模型开始，不盲目追求复杂模型，首先探索模型对业务问题的可解释性，理解所要解决问题的相关因素，然后逐步深入和优化。随着对问题的不断理解和加深，可以做更好的feature engineering，而且为了最大化地 利用有限的数据，还可以使用bootstrap的方法。
+
+> D) 如何实现以上的方法？
+
+> 回答：ridge和lasso在R中都有相应library和参数可以使用和设置，random forest和GBM模型有很多不同算法可以使用，random forest差别不大，GBM业界比较公认性能较好的是xgboost，feature engineering有很多方法，简单讲我总结了四个大类：
+
+- Embedded Method: 比如 random forest的feature importance rank可以参考
+- Wrapper Method: 还可以尝试forward和backward selection，比如recursive feature elimination
+- Feature Filter: 还可以通过correlation coefficient做feature filter
+- 重构feature: 比如通过LDA或者PCA的方法
+
+>2. 你常用哪些方法清洗/分析数据? 
+
+> 回答：首先metadata可以让我们对数据的质量情况有个大致了解，然后第一步是data analysis，比如对于无效数据，拼写错误，缺失值，重复值，和变化数据的处理，同时观察数据分布等stats取值。这一步中提到的对**缺失值** 的处理，有一整套系统的方法，我发表的一篇博客文章专门有对这个问题的总结，链接：<https://rpubs.com/flyunicorn/179395>。第二部是对 data transformation de的的定义，如在ETL中遇到的data mapping rule，特别是有 user-defined functions (UDFs) 的情况下。第三步是解决数据conflict问题，比如百分数表达方式，单位划一等，这一步中还有一点非常重要的是数据的标准化
+
+
+>3. 数据分析与建模测试
+
+### Environment setup
+```{r}
+library(knitr)
+library(readr)
+library(plyr)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(caret)
+library(tidyr)
+library(car)
+library(glmnet)
+library(broom)
+library(rpart)
+library(leaps)
+library(randomForest)
+library(gbm)
+library(xgboost)
+library(Ckmeans.1d.dp)
+library(DiagrammeR)
+library(devtools)
+install_github("easyGgplot2", "kassambara")
+library(easyGgplot2)
+library(purrr)
+library(tibble)
+library(ROSE)
+library(ROCR)
+options(digits = 7)
+setwd("~/Downloads")
+```
+
+### Load Data & Data Checking & Transformation
+```{r data, cache=TRUE}
+ads_train <- read_csv('~/Downloads/ads_train.csv') %>% mutate(type='train')
+ads_test <- read_csv('~/Downloads/ads_test.csv') %>% mutate(type='test',y_buy=NA)
+
+str(ads_train)
+str(ads_train)
+summary(ads_train)
+factorVars <- c("isbuyer","multiple_buy","multiple_visit","y_buy","type")
+numericVars <- setdiff(names(ads_train),factorVars)
+ads_all <- rbind(ads_train,ads_test) %>% map_at(factorVars,as.factor) %>% as_tibble
+ads_all %>% select(c(isbuyer,multiple_buy,multiple_visit,y_buy,type)) %>% select(-y_buy) %>% 
+  gather('variable','value',-type)  %>% 
+  ggplot(aes(x=value,group=factor(type))) + 
+  geom_bar(aes(y = ..prop..,color=factor(type),fill=factor(type)),
+           stat='count',position = 'dodge') +
+  facet_wrap(~variable, scales='free_x') +
+  theme(legend.title = element_blank())
+
+ads_all %>% select(c(buy_freq,visit_freq,buy_interval,sv_interval,expected_time_buy,expected_time_visit,last_buy,last_visit,uniq_urls,num_checkins,type)) %>% 
+  gather('variable','value',-type) %>% 
+  ggplot(aes(x=value,group=type, color=factor(type),fill=factor(type))) + 
+  geom_density(alpha=0.1) +
+  facet_wrap(~variable, scales=c('free')) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+ads_all %>% ggplot(aes(x=buy_interval,y=expected_time_buy)) + geom_point()
+ads_all %>% ggplot(aes(x=sv_interval,y=expected_time_visit)) + geom_point()
+```
+
+### Exploratory data analysis on categorical variables
+```{r}
+table(ads_train$isbuyer,ads_train$y_buy)
+ggplot(data = ads_train) + geom_count(mapping = aes(x = isbuyer, y = y_buy))
+
+table(ads_train$multiple_buy,ads_train$y_buy)
+ggplot(data = ads_train) + geom_count(mapping = aes(x = multiple_buy, y = y_buy))
+
+table(ads_train$multiple_visit,ads_train$y_buy)
+ggplot(data = ads_train) + geom_count(mapping = aes(x = multiple_visit, y = y_buy, col=multiple_visit))
+
+table(ads_train$multiple_buy,ads_train$isbuyer)
+ggplot(data = ads_train) + geom_count(mapping = aes(x = multiple_buy, y = isbuyer, col=multiple_buy))
+```
+
+### Exploratory data analysis on numeric variables
+```{r}
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='buy_freq', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))  
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='visit_freq', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='buy_interval', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='sv_interval', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='expected_time_buy', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='expected_time_visit', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='last_buy', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='last_visit', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='uniq_urls', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot2.violinplot(data=ads_train, xName='y_buy',yName='num_checkins', backgroundColor="white", fill='#FFAAD4',
+                removePanelGrid=TRUE,removePanelBorder=TRUE, axisLine=c(0.5, "solid", "black"))
+ggplot(ads_train,aes(1:nrow(ads_train),sv_interval,col=ads_train$y_buy))+geom_smooth()
+
+ads_all %>% filter(sv_interval>0) %>% ggplot(aes(x=last_buy ,y=sv_interval)) + geom_point(aes(color=expected_time_visit))
+ads_all %>% filter(sv_interval>0) %>% ggplot(aes(x=last_buy ,y=buy_interval)) + geom_point(aes(color=expected_time_visit))
+
+```
+
+#### Findings from EDA
+* `last_buy` and `last_visit` are identical features
+
+* NAs in `buy_freq` can be coded as 0
+
+* multiple_buy: buy more than once
+
+* multiple_visit: visit more than once
+
+* expected_time_buy: a hybrid variable that's derived from `last_buy` and `buy_interval` (__The `last_buy`/`last_visit` variable isn't coded correctly in the original datasets to figure out the exact formula__)
+
+* expected_time_visit: a hybrid variable that's derived from `last_visit` and `sv_interval`
+
+* One potential data anomaly is that expected time is negative
+
+* By combining and checking train and test sets together, we make sure feature distribution are comparable which is an often-neglected step in modeling
+
+* An important point in this modeling is the unbalanced classification of outcome variable. Four methods can be used to deal with this issue: up/over sampling, ROSE and SMOTE. Here we choose ROSE.  
+
+### Explore features' impact on outcome variable and feature engineering
+```{r}
+ads_train %>% gather('variable','value',-y_buy) %>% 
+  ggplot(aes(x=value,group=y_buy, color=factor(y_buy),fill=factor(y_buy))) + 
+  geom_density(alpha=0.1) +
+  facet_wrap(~variable, scales=c('free')) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+ads_train %>% gather('variable','value',-y_buy) %>% 
+  ggplot(aes(x=value,group=y_buy, color=factor(y_buy),fill=factor(y_buy))) + 
+  geom_bar() +facet_wrap(~variable, scales=c('free')) +
+  theme(axis.ticks = element_blank(), axis.text.x = element_blank())
+
+# anomolies: because last_buy and last_visit are identical features, we delete one of them.
+ads_all$last_visit <- NULL 
+# because of abnormal distribution of num_checkins, we log it
+ads_all_trans <- ads_all %>% mutate(num_checkins_log=log(num_checkins+1))
+ads_all_trans$num_checkins <- NULL
+ads_all_trans$type <- NULL
+
+```
+### Data split 
+```{r}
+set.seed(1)
+ads_train <- ads_all_trans[!is.na(ads_all_trans$y_buy),]
+ads_test <- ads_all_trans[is.na(ads_all_trans$y_buy),]
+ads_train$buy_freq[is.na(ads_train$buy_freq)] <- 0
+ads_test$buy_freq[is.na(ads_test$buy_freq)] <- 0
+in_train <- createDataPartition(ads_train$y_buy, p = 0.8, list = FALSE)
+training <- ads_train[in_train,]
+testing <- ads_train[-in_train,]
+truth <- testing$y_buy 
+testing$y_buy <- NULL
+```
+
+### Model building & Model evaluation - `glm`
+```{r}
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 10, 
+                     repeats = 10, 
+                     verboseIter = FALSE,
+                     sampling = "rose")
+set.seed(1)
+model_glm_rose <- caret::train(y_buy ~ .,
+                              data = training,
+                              method = "glm",
+                              family="binomial",
+                              preProcess = c("scale", "center"),
+                              trControl = ctrl)
+final_rose <- data.frame(actual = truth, predict(model_glm_rose, newdata = testing, type = "prob"))
+final_rose$predict <- ifelse(final_rose$X0 > 0.5, "0", "1")
+confusionMatrix(final_rose$predict, truth)
+
+pr <- prediction(final_rose$X1, truth)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+
+### Model building & Model evaluation - `rf`
+```{r,cache=TRUE}
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 10, 
+                     repeats = 3,
+                     verboseIter = FALSE,
+                     sampling = "rose")
+set.seed(1)
+model_rf_rose <- caret::train(y_buy ~ .,
+                              data = training,
+                              method = "rf",
+                              importance = TRUE,
+                              preProcess = c("scale", "center"),
+                              trControl = ctrl)
+final_rose2 <- data.frame(actual = truth, predict(model_rf_rose, newdata = testing, type = "prob"))
+final_rose2$predict <- ifelse(final_rose2$X0 > 0.5, "0", "1")
+confusionMatrix(final_rose2$predict, truth)
+
+pr2 <- prediction(final_rose2$X1, truth)
+prf2 <- performance(pr2, measure = "tpr", x.measure = "fpr")
+plot(prf2)
+auc2 <- performance(pr2, measure = "auc")
+auc2 <- auc2@y.values[[1]]
+auc2
+
+varImp(model_rf_rose, scale = FALSE)
+```
+
+* As we can see from variable importance rank, `buy_freq`,`buy_interval`,`multiple_buy` are all very good predictive features. If time allows, we could have done more feature engineering and eliminated some less predictive or reduntant variables. But tree-based method is robust in our case. 
+
+### Model building & Model evaluation - `emsemble method`
+```{r}
+preds <- cbind(final_rose$X0,final_rose2$X0) %>% as_tibble
+colnames(preds) <- c('glm','rf')
+preds %>% ggplot(aes(x=glm,y=rf)) + geom_point() + geom_abline(intercept = 0, slope=1)
+preds %<>% mutate(Avg=(glm+rf)/2)
+preds$predict <- ifelse(preds$Avg > 0.5, "0", "1")
+confusionMatrix(preds$predict, truth)
+
+pr3 <- prediction(1-preds$Avg, truth)
+prf3 <- performance(pr3, measure = "tpr", x.measure = "fpr")
+plot(prf3)
+auc3 <- performance(pr3, measure = "auc")
+auc3 <- auc3@y.values[[1]]
+auc3
+```
+### Generate results
+```{r}
+ads_test$y_buy <- NULL
+final0 <- data.frame(predict(model_glm_rose, newdata = ads_test, type = "prob"))
+final1 <- data.frame(predict(model_rf_rose, newdata = ads_test, type = "prob"))
+result <- cbind(final0$X0,final1$X0) %>% as_tibble
+colnames(result) <- c('glm','rf')
+result %<>% mutate(Avg=1-(glm+rf)/2)
+result$predict <- ifelse(result$Avg > 0.5, "1", "0")
+names(result)=c("final0","final1","Avg","predict")
+result[,3:4] %>% write_csv('~/Downloads/result.csv')
+```
+
+* We choose ensemble method as its accuracy and auc are both higher than logistic regression and random forest. We could also look at F1 score, sensitivity, specificity if necessary. 
